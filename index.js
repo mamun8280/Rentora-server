@@ -116,6 +116,24 @@ app.post("/api/profile/:email", async (req, res) => {
 });
 
 
+// POST API — Add Equipment
+app.post("/api/equipment", async (req, res) => {
+  const equipmentData = req.body;
+
+  const result = await db.collection("equipment").insertOne({
+    ...equipmentData,
+    status: "Pending",
+    createdAt: new Date(),
+  });
+
+  res.send({
+    success: true,
+    message: "Equipment added successfully",
+    insertedId: result.insertedId,
+  });
+});
+
+
 
 
 // Start Server
