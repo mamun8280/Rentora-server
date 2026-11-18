@@ -78,6 +78,46 @@ app.get("/api/profile/:email", async (req, res) => {
 });
 
 
+// POST Update User Profile
+app.post("/api/profile/:email", async (req, res) => {
+  const email = decodeURIComponent(req.params.email);
+
+  const { name, phone, address } = req.body;
+
+  if (!name?.trim()) {
+    return res.status(400).send({
+      success: false,
+      message: "Name is required",
+    });
+  }
+
+  const result = await db.collection("user").updateOne(
+    { email: email },
+    {
+      $set: {
+        name: name.trim(),
+        phone: phone?.trim() || "",
+        address: address?.trim() || "",
+      },
+    }
+  );
+
+  if (result.matchedCount === 0) {
+    return res.status(404).send({
+      success: false,
+      message: "User not found",
+    });
+  }
+
+  res.send({
+    success: true,
+    message: "Profile updated successfully",
+  });
+});
+
+
+
+
 // Start Server
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
