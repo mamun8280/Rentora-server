@@ -1,59 +1,84 @@
+
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import cookieParser from "cookie-parser";
-import { MongoClient, ServerApiVersion } from "mongodb";
+import { MongoClient } from "mongodb";
 
 dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 5000;
 
-// Middlewares
 app.use(
   cors({
     origin: [process.env.CLIENT_URL],
     credentials: true,
   })
 );
+
 app.use(express.json());
-app.use(cookieParser());
 
-// MongoDB connection
-const client = new MongoClient(process.env.MONGODB_URI, {
-  serverApi: {
-    version: ServerApiVersion.v1,
-    strict: true,
-    deprecationErrors: true,
-  },
-});
+// MongoDB Connection
+const client = new MongoClient(process.env.MONGODB_URI);
 
-async function run() {
-  try {
-    await client.connect();
-    const db = client.db("rentora");
+let db;
 
-    // Collections (porer step e ei gula use korbo)
-    const usersCollection = db.collection("users");
-    const equipmentCollection = db.collection("equipment");
-    const bookingsCollection = db.collection("bookings");
-    const paymentsCollection = db.collection("payments");
-    const favoritesCollection = db.collection("favorites");
-    const reviewsCollection = db.collection("reviews");
+try {
+  await client.connect();
 
-    await db.command({ ping: 1 });
-    console.log("MongoDB connected successfully");
-  } catch (error) {
-    console.error("MongoDB connection error:", error);
-  }
+  db = client.db("rentora");
+
+  console.log("MongoDB Connected Successfully");
+} catch (error) {
+  console.error("MongoDB Connection Failed:", error);
+  process.exit(1);
 }
-run();
 
-// Root route
+// Home Route
 app.get("/", (req, res) => {
   res.send("Rentora server is running");
 });
 
+// GET User Profile
+app.get("/api/profile/:email", async (req, res) => {
+  const email = decodeURIComponent(req.params.email);
+
+  const user = await db.collection("user").findOne(
+    { email: email },
+    {
+      projection: {
+        name: 1,
+        email: 1,
+        image: 1,
+        phone: 1,
+        address: 1,
+        role: 1,
+      },
+    }
+  );
+
+  if (!user) {
+    return res.status(404).send({
+      success: false,
+      message: "User not found",
+    });
+  }
+
+  res.send({
+    success: true,
+    user: {
+      name: user.name || "",
+      email: user.email || "",
+      image: user.image || "",
+      phone: user.phone || "",
+      address: user.address || "",
+      role: user.role || "customer",
+    },
+  });
+});
+
+
+// Start Server
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
 });
