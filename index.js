@@ -130,6 +130,19 @@ app.patch("/api/equipment/:id", async (req, res) => {
   res.send({ success: true, message: "Equipment updated" });
 });
 
+// Delete owner Equipment
+app.delete("/api/equipment/:id", async (req, res) => {
+  const result = await db.collection("equipment").deleteOne({
+    _id: new ObjectId(req.params.id),
+  });
+
+  res.send({
+    success: result.deletedCount > 0,
+    message: result.deletedCount ? "Equipment deleted" : "Not found",
+  });
+});
+
+
 
 
 // Start Server
