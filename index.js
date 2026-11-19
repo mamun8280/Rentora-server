@@ -38,39 +38,22 @@ app.get("/", (req, res) => {
 
 // Customer Booking
 app.post("/api/bookings", async (req, res) => {
-  const {
-    equipmentId,
-    customerName,
-    customerEmail,
-    rentalStartDate,
-    rentalEndDate,
-    requiredQuantity,
-  } = req.body;
-
-  if (!ObjectId.isValid(equipmentId)) {
-    return res.status(400).send({ message: "Invalid equipment ID" });
-  }
+  const { equipmentId, ...bookingData } = req.body;
 
   const equipment = await db.collection("equipment").findOne({
     _id: new ObjectId(equipmentId),
   });
 
-  if (!equipment) {
-    return res.status(404).send({ message: "Equipment not found" });
-  }
+  if (!equipment) return res.status(404).send({ message: "Equipment not found" });
 
   const result = await db.collection("bookings").insertOne({
+    ...bookingData,
     equipmentId,
     equipmentName: equipment.equipmentName,
     equipmentImage: equipment.image,
     ownerName: equipment.ownerName,
     ownerEmail: equipment.ownerEmail,
-    customerName,
-    customerEmail,
-    rentalStartDate,
-    rentalEndDate,
-    requiredQuantity: Number(requiredQuantity),
-    bookingAmount: Number(equipment.rentalPrice) * Number(requiredQuantity),
+    bookingAmount: Number(equipment.rentalPrice) * Number(bookingData.requiredQuantity),
     paymentStatus: "Unpaid",
     bookingStatus: "Pending",
     createdAt: new Date(),
