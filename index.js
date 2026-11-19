@@ -36,6 +36,21 @@ app.get("/", (req, res) => {
   res.send("Rentora server is running");
 });
 
+// GET Featured Equipment
+app.get("/api/equipment/featured", async (req, res) => {
+  try {
+    const equipment = await db.collection("equipment")
+      .find({ status: "Approved" })
+      .sort({ createdAt: -1 })
+      .limit(6)
+      .toArray();
+
+    res.send({ success: true, equipment });
+  } catch (error) {
+    res.status(500).send({ success: false, message: "Server Error" });
+  }
+});
+
 // Customer Booking
 app.post("/api/bookings", async (req, res) => {
   const { equipmentId, ...bookingData } = req.body;
