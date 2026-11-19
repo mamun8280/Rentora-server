@@ -20,14 +20,11 @@ app.use(express.json());
 
 // MongoDB Connection
 const client = new MongoClient(process.env.MONGODB_URI);
-
 let db;
 
 try {
   await client.connect();
-
   db = client.db("rentora");
-
   console.log("MongoDB Connected Successfully");
 } catch (error) {
   console.error("MongoDB Connection Failed:", error);
@@ -39,7 +36,74 @@ app.get("/", (req, res) => {
   res.send("Rentora server is running");
 });
 
-// GET customer User Profile
+// Customer Booking
+app.post("/api/bookings", async (req, res) => {
+  const {
+    equipmentId,
+    customerName,
+    customerEmail,
+    rentalStartDate,
+    rentalEndDate,
+    requiredQuantity,
+  } = req.body;
+
+  if (!ObjectId.isValid(equipmentId)) {
+    return res.status(400).send({ message: "Invalid equipment ID" });
+  }
+
+  const equipment = await db.collection("equipment").findOne({
+    _id: new ObjectId(equipmentId),
+  });
+
+  if (!equipment) {
+    return res.status(404).send({ message: "Equipment not found" });
+  }
+
+  const result = await db.collection("bookings").insertOne({
+    equipmentId,
+    equipmentName: equipment.equipmentName,
+    equipmentImage: equipment.image,
+    ownerName: equipment.ownerName,
+    ownerEmail: equipment.ownerEmail,
+    customerName,
+    customerEmail,
+    rentalStartDate,
+    rentalEndDate,
+    requiredQuantity: Number(requiredQuantity),
+    bookingAmount: Number(equipment.rentalPrice) * Number(requiredQuantity),
+    paymentStatus: "Unpaid",
+    bookingStatus: "Pending",
+    createdAt: new Date(),
+  });
+
+  res.send({ success: true, insertedId: result.insertedId });
+});
+
+// Owner My Equipment Rentals
+app.get("/api/bookings/owner/:email", async (req, res) => {
+  const email = decodeURIComponent(req.params.email);
+
+  const bookings = await db.collection("bookings")
+    .find({ ownerEmail: email })
+    .sort({ createdAt: -1 })
+    .toArray();
+
+  res.send({ success: true, bookings });
+});
+
+// Customer My Rentals
+app.get("/api/bookings/customer/:email", async (req, res) => {
+  const email = decodeURIComponent(req.params.email);
+
+  const bookings = await db.collection("bookings")
+    .find({ customerEmail: email })
+    .sort({ createdAt: -1 })
+    .toArray();
+
+  res.send({ success: true, bookings });
+});
+
+// GET Customer User Profile
 app.get("/api/profile/:email", async (req, res) => {
   const user = await db.collection("user").findOne(
     { email: decodeURIComponent(req.params.email) },
@@ -58,22 +122,20 @@ app.get("/api/profile/:email", async (req, res) => {
   res.send(user);
 });
 
-
-// POST customer  User Profile
+// POST Customer User Profile
 app.post("/api/profile/:email", async (req, res) => {
   const { email } = req.params;
   const { name, phone, address } = req.body;
 
   await db.collection("user").updateOne(
-    { email },
+    { email: decodeURIComponent(email) },
     { $set: { name, phone, address } }
   );
 
   res.send({ success: true, message: "Profile updated successfully" });
 });
 
-
-// POST owner API — Add Equipment
+// POST Owner Add Equipment
 app.post("/api/equipment", async (req, res) => {
   const equipmentData = req.body;
 
@@ -90,8 +152,7 @@ app.post("/api/equipment", async (req, res) => {
   });
 });
 
-
-// GET owner My Equipment
+// GET Owner My Equipment
 app.get("/api/equipment/my-equipment/:email", async (req, res) => {
   const email = decodeURIComponent(req.params.email);
 
@@ -100,15 +161,16 @@ app.get("/api/equipment/my-equipment/:email", async (req, res) => {
     .sort({ createdAt: -1 })
     .toArray();
 
-  res.send({
-    success: true,
-    equipment,
-  });
+  res.send({ success: true, equipment });
 });
 
-// GET Detail owner Equipment
+// GET Equipment Details
 app.get("/api/equipment/:id", async (req, res) => {
   const { id } = req.params;
+
+  if (!ObjectId.isValid(id)) {
+    return res.status(400).send({ message: "Invalid equipment ID" });
+  }
 
   const equipment = await db.collection("equipment").findOne({
     _id: new ObjectId(id),
@@ -117,10 +179,13 @@ app.get("/api/equipment/:id", async (req, res) => {
   res.send(equipment);
 });
 
-
-// update owner Equipment
+// Update Owner Equipment
 app.patch("/api/equipment/:id", async (req, res) => {
   const { id } = req.params;
+
+  if (!ObjectId.isValid(id)) {
+    return res.status(400).send({ message: "Invalid equipment ID" });
+  }
 
   await db.collection("equipment").updateOne(
     { _id: new ObjectId(id) },
@@ -130,7 +195,7 @@ app.patch("/api/equipment/:id", async (req, res) => {
   res.send({ success: true, message: "Equipment updated" });
 });
 
-// Delete owner Equipment
+// Delete Owner Equipment
 app.delete("/api/equipment/:id", async (req, res) => {
   const result = await db.collection("equipment").deleteOne({
     _id: new ObjectId(req.params.id),
@@ -141,9 +206,6 @@ app.delete("/api/equipment/:id", async (req, res) => {
     message: result.deletedCount ? "Equipment deleted" : "Not found",
   });
 });
-
-
-
 
 // Start Server
 app.listen(port, () => {
