@@ -39,12 +39,10 @@ app.get("/", (req, res) => {
   res.send("Rentora server is running");
 });
 
-// GET User Profile
+// GET customer User Profile
 app.get("/api/profile/:email", async (req, res) => {
-  const email = decodeURIComponent(req.params.email);
-
   const user = await db.collection("user").findOne(
-    { email: email },
+    { email: decodeURIComponent(req.params.email) },
     {
       projection: {
         name: 1,
@@ -57,66 +55,25 @@ app.get("/api/profile/:email", async (req, res) => {
     }
   );
 
-  if (!user) {
-    return res.status(404).send({
-      success: false,
-      message: "User not found",
-    });
-  }
-
-  res.send({
-    success: true,
-    user: {
-      name: user.name || "",
-      email: user.email || "",
-      image: user.image || "",
-      phone: user.phone || "",
-      address: user.address || "",
-      role: user.role || "customer",
-    },
-  });
+  res.send(user);
 });
 
 
-// POST Update User Profile
+// POST customer  User Profile
 app.post("/api/profile/:email", async (req, res) => {
-  const email = decodeURIComponent(req.params.email);
-
+  const { email } = req.params;
   const { name, phone, address } = req.body;
 
-  if (!name?.trim()) {
-    return res.status(400).send({
-      success: false,
-      message: "Name is required",
-    });
-  }
-
-  const result = await db.collection("user").updateOne(
-    { email: email },
-    {
-      $set: {
-        name: name.trim(),
-        phone: phone?.trim() || "",
-        address: address?.trim() || "",
-      },
-    }
+  await db.collection("user").updateOne(
+    { email },
+    { $set: { name, phone, address } }
   );
 
-  if (result.matchedCount === 0) {
-    return res.status(404).send({
-      success: false,
-      message: "User not found",
-    });
-  }
-
-  res.send({
-    success: true,
-    message: "Profile updated successfully",
-  });
+  res.send({ success: true, message: "Profile updated successfully" });
 });
 
 
-// POST API — Add Equipment
+// POST owner API — Add Equipment
 app.post("/api/equipment", async (req, res) => {
   const equipmentData = req.body;
 
@@ -134,7 +91,7 @@ app.post("/api/equipment", async (req, res) => {
 });
 
 
-// GET My Equipment
+// GET owner My Equipment
 app.get("/api/equipment/my-equipment/:email", async (req, res) => {
   const email = decodeURIComponent(req.params.email);
 
@@ -158,6 +115,19 @@ app.get("/api/equipment/:id", async (req, res) => {
   });
 
   res.send(equipment);
+});
+
+
+// update owner Equipment
+app.patch("/api/equipment/:id", async (req, res) => {
+  const { id } = req.params;
+
+  await db.collection("equipment").updateOne(
+    { _id: new ObjectId(id) },
+    { $set: req.body }
+  );
+
+  res.send({ success: true, message: "Equipment updated" });
 });
 
 
