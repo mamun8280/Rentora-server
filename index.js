@@ -134,6 +134,21 @@ app.post("/api/equipment", async (req, res) => {
 });
 
 
+// GET My Equipment
+app.get("/api/equipment/my-equipment/:email", async (req, res) => {
+  const email = decodeURIComponent(req.params.email);
+
+  const equipment = await db.collection("equipment")
+    .find({ ownerEmail: email })
+    .sort({ createdAt: -1 })
+    .toArray();
+
+  res.send({
+    success: true,
+    equipment,
+  });
+});
+
 
 
 // Start Server
