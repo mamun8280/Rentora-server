@@ -2,7 +2,7 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import { MongoClient } from "mongodb";
+import { MongoClient, ObjectId } from "mongodb";
 
 dotenv.config();
 
@@ -147,6 +147,17 @@ app.get("/api/equipment/my-equipment/:email", async (req, res) => {
     success: true,
     equipment,
   });
+});
+
+// GET Detail owner Equipment
+app.get("/api/equipment/:id", async (req, res) => {
+  const { id } = req.params;
+
+  const equipment = await db.collection("equipment").findOne({
+    _id: new ObjectId(id),
+  });
+
+  res.send(equipment);
 });
 
 
