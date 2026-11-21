@@ -236,6 +236,21 @@ app.delete("/api/equipment/:id", async (req, res) => {
   });
 });
 
+
+// GET admin page All Users
+app.get("/api/admin/users", async (req, res) => {
+  try {
+    const users = await db.collection("user")
+      .find({ role: { $in: ["customer", "owner"] } })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.send({ success: true, users });
+  } catch (error) {
+    res.status(500).send({ success: false, message: "Server Error" });
+  }
+});
+
 // Start Server
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
