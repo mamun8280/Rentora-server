@@ -362,7 +362,7 @@ app.post("/api/upload-image", upload.single("image"), async (req, res) => {
 
 
 
-// GET   All Equipment api
+// GET  admin All Equipment page er api
 app.get("/api/admin/equipment", async (req, res) => {
   const equipment = await db.collection("equipment")
     .find({})
@@ -372,7 +372,7 @@ app.get("/api/admin/equipment", async (req, res) => {
   res.send({ success: true, equipment });
 });
 
-// UPDATE / APPROVE / REJECT
+// admin All Equipment page er UPDATE / APPROVE / REJECT
 app.patch("/api/admin/equipment/:id", async (req, res) => {
   const result = await db.collection("equipment").updateOne(
     { _id: new ObjectId(req.params.id) },
@@ -382,6 +382,14 @@ app.patch("/api/admin/equipment/:id", async (req, res) => {
   res.send({ success: result.modifiedCount > 0 });
 });
 
+// DELETE Equipment
+app.delete("/api/admin/equipment/:id", async (req, res) => {
+  const result = await db.collection("equipment").deleteOne({
+    _id: new ObjectId(req.params.id),
+  });
+
+  res.send({ success: result.deletedCount > 0 });
+});
 
 
 
