@@ -237,11 +237,11 @@ app.delete("/api/equipment/:id", async (req, res) => {
 });
 
 
-// GET admin page All Users
+// GET All Users
 app.get("/api/admin/users", async (req, res) => {
   try {
     const users = await db.collection("user")
-      .find({ role: { $in: ["customer", "owner"] } })
+      .find({})
       .sort({ createdAt: -1 })
       .toArray();
 
@@ -250,6 +250,30 @@ app.get("/api/admin/users", async (req, res) => {
     res.status(500).send({ success: false, message: "Server Error" });
   }
 });
+
+
+// Update User Role
+app.patch("/api/admin/users/:id/role", async (req, res) => {
+  const { id } = req.params;
+  const { role } = req.body;
+
+  if (!ObjectId.isValid(id) || !["customer", "owner", "admin"].includes(role)) {
+    return res.status(400).send({ message: "Invalid ID or role" });
+  }
+
+  const result = await db.collection("user").updateOne(
+    { _id: new ObjectId(id) },
+    { $set: { role } }
+  );
+
+  if (!result.matchedCount) {
+    return res.status(404).send({ message: "User not found" });
+  }
+
+  res.send({ success: true, message: "Role updated successfully" });
+});
+
+
 
 // Start Server
 app.listen(port, () => {
