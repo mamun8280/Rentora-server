@@ -6,6 +6,14 @@ import { MongoClient, ObjectId } from "mongodb";
 
 dotenv.config();
 
+import multer from "multer";
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+});
+
+
+
 const app = express();
 const port = process.env.PORT || 5000;
 
@@ -286,36 +294,26 @@ app.patch("/api/admin/users/:id/role", async (req, res) => {
 
 
 
-
-
-// Admin Profile API
+/// GET User Profile
 app.get("/api/profile/:email", async (req, res) => {
   const user = await db.collection("user").findOne(
-    { email: req.params.email },
-    {
-      projection: {
-        name: 1,
-        email: 1,
-        image: 1,
-        phone: 1,
-        address: 1,
-      },
-    }
+    { email: decodeURIComponent(req.params.email) },
+    { projection: { name: 1, email: 1, image: 1, phone: 1, address: 1, role: 1 } }
   );
 
-  if (!user) {
-    return res.status(404).send({ message: "User not found" });
-  }
+  if (!user) return res.status(404).send({ message: "User not found" });
 
   res.send({ success: true, profile: user });
 });
 
-// Admin  Profile update API
+
+
+// UPDATE User Profile
 app.post("/api/profile/:email", async (req, res) => {
   const { name, image, phone, address } = req.body;
 
   const result = await db.collection("user").updateOne(
-    { email: req.params.email },
+    { email: decodeURIComponent(req.params.email) },
     { $set: { name, image, phone, address } }
   );
 
@@ -323,7 +321,27 @@ app.post("/api/profile/:email", async (req, res) => {
     return res.status(404).send({ message: "User not found" });
   }
 
-  res.send({ success: true, message: "Profile updated" });
+  res.send({ success: true, message: "Profile updated successfully" });
+});
+
+
+// Admin  Profile Image update API
+app.post("/api/upload-image", upload.single("image"), async (req, res) => {
+  if (!req.file) return res.status(400).send({ message: "Image required" });
+
+  const body = new URLSearchParams({
+    image: req.file.buffer.toString("base64"),
+  });
+  const response = await fetch(
+    `https://api.imgbb.com/1/upload?key=${process.env.IMGBB_API_KEY}`,
+    { method: "POST", body }
+  );
+
+
+
+  const data = await response.json();
+  if (!data.success) return res.status(500).send({ message: "Upload failed" });
+  res.send({ success: true, image: data.data.url });
 });
 
 
