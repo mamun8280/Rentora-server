@@ -310,6 +310,22 @@ app.get("/api/profile/:email", async (req, res) => {
   res.send({ success: true, profile: user });
 });
 
+// Admin  Profile update API
+app.post("/api/profile/:email", async (req, res) => {
+  const { name, image, phone, address } = req.body;
+
+  const result = await db.collection("user").updateOne(
+    { email: req.params.email },
+    { $set: { name, image, phone, address } }
+  );
+
+  if (!result.matchedCount) {
+    return res.status(404).send({ message: "User not found" });
+  }
+
+  res.send({ success: true, message: "Profile updated" });
+});
+
 
 
 
