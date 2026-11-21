@@ -86,6 +86,25 @@ app.post("/api/favorites", async (req, res) => {
   res.send({ success: true, insertedId: result.insertedId });
 });
 
+
+// Get Customer Favorites
+app.get("/api/favorites/:email", async (req, res) => {
+  const email = req.params.email;
+
+  const favorites = await db
+    .collection("favorites")
+    .find({ customerEmail: email })
+    .sort({ createdAt: -1 })
+    .toArray();
+
+  res.send({
+    success: true,
+    favorites,
+  });
+});
+
+
+
 // Customer My Rentals
 app.get("/api/bookings/customer/:email", async (req, res) => {
   const email = decodeURIComponent(req.params.email);
