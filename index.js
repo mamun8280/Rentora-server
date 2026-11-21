@@ -51,31 +51,7 @@ app.get("/api/equipment/featured", async (req, res) => {
   }
 });
 
-// Customer Booking
-app.post("/api/bookings", async (req, res) => {
-  const { equipmentId, ...bookingData } = req.body;
 
-  const equipment = await db.collection("equipment").findOne({
-    _id: new ObjectId(equipmentId),
-  });
-
-  if (!equipment) return res.status(404).send({ message: "Equipment not found" });
-
-  const result = await db.collection("bookings").insertOne({
-    ...bookingData,
-    equipmentId,
-    equipmentName: equipment.equipmentName,
-    equipmentImage: equipment.image,
-    ownerName: equipment.ownerName,
-    ownerEmail: equipment.ownerEmail,
-    bookingAmount: Number(equipment.rentalPrice) * Number(bookingData.requiredQuantity),
-    paymentStatus: "Unpaid",
-    bookingStatus: "Pending",
-    createdAt: new Date(),
-  });
-
-  res.send({ success: true, insertedId: result.insertedId });
-});
 
 // Owner My Equipment Rentals
 app.get("/api/bookings/owner/:email", async (req, res) => {
@@ -85,8 +61,29 @@ app.get("/api/bookings/owner/:email", async (req, res) => {
     .find({ ownerEmail: email })
     .sort({ createdAt: -1 })
     .toArray();
-
   res.send({ success: true, bookings });
+});
+
+// customer favorites api
+app.post("/api/favorites", async (req, res) => {
+  const { customerName, customerEmail, equipmentId } = req.body;
+
+  const equipment = await db.collection("equipment").findOne({
+    _id: new ObjectId(equipmentId),
+  });
+  const favorite = {
+    customerName,
+    customerEmail,
+    equipmentId,
+    equipmentName: equipment.equipmentName,
+    category: equipment.category,
+    image: equipment.image,
+    ownerName: equipment.ownerName,
+    ownerEmail: equipment.ownerEmail,
+    createdAt: new Date(),
+  };
+  const result = await db.collection("favorites").insertOne(favorite);
+  res.send({ success: true, insertedId: result.insertedId });
 });
 
 // Customer My Rentals
