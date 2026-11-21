@@ -294,35 +294,52 @@ app.patch("/api/admin/users/:id/role", async (req, res) => {
 
 
 
-/// GET User Profile
+// GET User Profile
 app.get("/api/profile/:email", async (req, res) => {
-  const user = await db.collection("user").findOne(
-    { email: decodeURIComponent(req.params.email) },
-    { projection: { name: 1, email: 1, image: 1, phone: 1, address: 1, role: 1 } }
-  );
+  try {
+    const user = await db.collection("user").findOne(
+      { email: decodeURIComponent(req.params.email) },
+      { projection: { name: 1, email: 1, image: 1, phone: 1, address: 1, role: 1 } }
+    );
 
-  if (!user) return res.status(404).send({ message: "User not found" });
+    if (!user) return res.status(404).send({ message: "User not found" });
 
-  res.send({ success: true, profile: user });
+    res.send({ success: true, profile: user });
+  } catch (error) {
+    console.error(error);
+    res.status(500).send({ message: "Failed to load profile" });
+  }
 });
-
-
 
 // UPDATE User Profile
 app.post("/api/profile/:email", async (req, res) => {
-  const { name, image, phone, address } = req.body;
+  try {
+    const { name, image, phone, address } = req.body;
+    const email = decodeURIComponent(req.params.email);
 
-  const result = await db.collection("user").updateOne(
-    { email: decodeURIComponent(req.params.email) },
-    { $set: { name, image, phone, address } }
-  );
+    console.log("Incoming image URL:", image);
 
-  if (!result.matchedCount) {
-    return res.status(404).send({ message: "User not found" });
+    const result = await db.collection("user").updateOne(
+      { email },
+      { $set: { name, image, phone, address } }
+    );
+
+    console.log("Modified count:", result.modifiedCount);
+
+    if (!result.matchedCount) {
+      return res.status(404).send({ message: "User not found" });
+    }
+
+    res.send({
+      success: true,
+      message: "Profile updated successfully",
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).send({ message: "Failed to update profile" });
   }
-
-  res.send({ success: true, message: "Profile updated successfully" });
 });
+
 
 
 // Admin  Profile Image update API
@@ -338,10 +355,21 @@ app.post("/api/upload-image", upload.single("image"), async (req, res) => {
   );
 
 
-
   const data = await response.json();
   if (!data.success) return res.status(500).send({ message: "Upload failed" });
   res.send({ success: true, image: data.data.url });
+});
+
+
+
+// GET   All Equipment api
+app.get("/api/admin/equipment", async (req, res) => {
+  const equipment = await db.collection("equipment")
+    .find({})
+    .sort({ createdAt: -1 })
+    .toArray();
+
+  res.send({ success: true, equipment });
 });
 
 
