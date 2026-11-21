@@ -284,6 +284,35 @@ app.patch("/api/admin/users/:id/role", async (req, res) => {
 
 
 
+
+
+
+
+// Admin Profile API
+app.get("/api/profile/:email", async (req, res) => {
+  const user = await db.collection("user").findOne(
+    { email: req.params.email },
+    {
+      projection: {
+        name: 1,
+        email: 1,
+        image: 1,
+        phone: 1,
+        address: 1,
+      },
+    }
+  );
+
+  if (!user) {
+    return res.status(404).send({ message: "User not found" });
+  }
+
+  res.send({ success: true, profile: user });
+});
+
+
+
+
 // Start Server
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
