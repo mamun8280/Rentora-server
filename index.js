@@ -104,6 +104,21 @@ app.get("/api/favorites/:email", async (req, res) => {
 });
 
 
+// Remove Favorite
+app.delete("/api/favorites/:id", async (req, res) => {
+  const result = await db.collection("favorites").deleteOne({
+    _id: new ObjectId(req.params.id),
+  });
+
+  res.send({
+    success: result.deletedCount > 0,
+    message: result.deletedCount
+      ? "Favorite removed successfully"
+      : "Favorite not found",
+  });
+});
+
+
 
 // Customer My Rentals
 app.get("/api/bookings/customer/:email", async (req, res) => {
