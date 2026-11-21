@@ -156,6 +156,43 @@ app.post("/api/profile/:email", async (req, res) => {
   }
 });
 
+
+
+// IMAGE UPLOAD
+app.post("/api/upload-image", upload.single("image"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).send({ message: "No image selected" });
+    }
+
+    const formData = new FormData();
+    formData.append("image", req.file.buffer.toString("base64"));
+
+    const response = await fetch(
+      `https://api.imgbb.com/1/upload?key=${process.env.IMGBB_API_KEY}`,
+      { method: "POST", body: formData }
+    );
+
+    const result = await response.json();
+
+    if (!response.ok || !result.success) {
+      return res.status(500).send({
+        message: result.error?.message || "Image upload failed",
+      });
+    }
+
+    res.send({ success: true, image: result.data.url });
+  } catch (error) {
+    console.error("Upload Error:", error);
+    res.status(500).send({ message: "Image upload failed" });
+  }
+});
+
+
+
+
+
+
 // POST Owner Add Equipment
 app.post("/api/equipment", async (req, res) => {
   const equipmentData = req.body;
