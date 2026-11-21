@@ -372,6 +372,17 @@ app.get("/api/admin/equipment", async (req, res) => {
   res.send({ success: true, equipment });
 });
 
+// UPDATE / APPROVE / REJECT
+app.patch("/api/admin/equipment/:id", async (req, res) => {
+  const result = await db.collection("equipment").updateOne(
+    { _id: new ObjectId(req.params.id) },
+    { $set: req.body }
+  );
+
+  res.send({ success: result.modifiedCount > 0 });
+});
+
+
 
 
 
