@@ -251,6 +251,15 @@ app.get("/api/admin/users", async (req, res) => {
   }
 });
 
+// Delete User 
+app.delete("/api/admin/users/:id", async (req, res) => {
+  const result = await db.collection("user").deleteOne({
+    _id: new ObjectId(req.params.id),
+  });
+
+  res.send({ success: true, result });
+});
+
 
 // Update User Role
 app.patch("/api/admin/users/:id/role", async (req, res) => {
