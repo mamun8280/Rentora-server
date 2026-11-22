@@ -55,6 +55,83 @@ app.get("/api/equipment/featured", async (req, res) => {
   }
 });
 
+// GET All Approved Equipment (Search, Filter & Sort)
+app.get("/api/equipment", async (req, res) => {
+  try {
+    const {
+      search,
+      category,
+      rentalType,
+      minPrice,
+      maxPrice,
+      availability,
+      sort,
+    } = req.query;
+
+    const query = { status: "Approved" };
+
+    // Search by equipment name and location
+    if (search) {
+      const text = String(search).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+      query.$or = [
+        { equipmentName: { $regex: text, $options: "i" } },
+        { location: { $regex: text, $options: "i" } },
+      ];
+    }
+
+    // Category and Rental Type
+    if (category && category !== "All") {
+      query.category = category;
+    }
+
+    if (rentalType && rentalType !== "All") {
+      query.rentalType = rentalType;
+    }
+
+    // Price Range
+    if (minPrice || maxPrice) {
+      query.rentalPrice = {};
+
+      if (minPrice) query.rentalPrice.$gte = Number(minPrice);
+      if (maxPrice) query.rentalPrice.$lte = Number(maxPrice);
+    }
+
+    // Availability
+    if (availability === "Available") {
+      query.availableQuantity = { $gt: 0 };
+    } else if (availability === "Unavailable") {
+      query.availableQuantity = { $lte: 0 };
+    }
+
+    // Sorting
+    const sortOption =
+      sort === "price-low"
+        ? { rentalPrice: 1 }
+        : sort === "price-high"
+          ? { rentalPrice: -1 }
+          : { createdAt: -1 };
+
+    const equipment = await db.collection("equipment")
+      .find(query)
+      .sort(sortOption)
+      .toArray();
+
+    res.send({
+      success: true,
+      total: equipment.length,
+      equipment,
+    });
+  } catch (error) {
+    console.error("All Equipment Error:", error);
+
+    res.status(500).send({
+      success: false,
+      message: "Failed to fetch equipment",
+    });
+  }
+});
+
 // Owner My Equipment Rentals
 app.get("/api/bookings/owner/:email", async (req, res) => {
   const email = decodeURIComponent(req.params.email);
@@ -88,6 +165,7 @@ app.post("/api/favorites", async (req, res) => {
   };
 
   const result = await db.collection("favorites").insertOne(favorite);
+
   res.send({ success: true, insertedId: result.insertedId });
 });
 
@@ -109,7 +187,9 @@ app.delete("/api/favorites/:id", async (req, res) => {
 
   res.send({
     success: result.deletedCount > 0,
-    message: result.deletedCount ? "Favorite removed successfully" : "Favorite not found",
+    message: result.deletedCount
+      ? "Favorite removed successfully"
+      : "Favorite not found",
   });
 });
 
@@ -125,22 +205,34 @@ app.get("/api/bookings/customer/:email", async (req, res) => {
   res.send({ success: true, bookings });
 });
 
-// GET User Profile (Customer, Owner, Admin)
+// GET User Profile
 app.get("/api/profile/:email", async (req, res) => {
   try {
     const user = await db.collection("user").findOne(
       { email: req.params.email },
-      { projection: { name: 1, email: 1, image: 1, phone: 1, address: 1, role: 1 } }
+      {
+        projection: {
+          name: 1,
+          email: 1,
+          image: 1,
+          phone: 1,
+          address: 1,
+          role: 1,
+        },
+      }
     );
 
-    if (!user) return res.status(404).send({ message: "User not found" });
+    if (!user) {
+      return res.status(404).send({ message: "User not found" });
+    }
+
     res.send({ success: true, profile: user });
   } catch (error) {
     res.status(500).send({ message: "Server Error" });
   }
 });
 
-// UPDATE User Profile (Customer, Owner, Admin)
+// UPDATE User Profile
 app.post("/api/profile/:email", async (req, res) => {
   try {
     const { name, image, phone, address } = req.body;
@@ -155,8 +247,6 @@ app.post("/api/profile/:email", async (req, res) => {
     res.status(500).send({ message: "Update Failed" });
   }
 });
-
-
 
 // IMAGE UPLOAD
 app.post("/api/upload-image", upload.single("image"), async (req, res) => {
@@ -187,11 +277,6 @@ app.post("/api/upload-image", upload.single("image"), async (req, res) => {
     res.status(500).send({ message: "Image upload failed" });
   }
 });
-
-
-
-
-
 
 // POST Owner Add Equipment
 app.post("/api/equipment", async (req, res) => {
