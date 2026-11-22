@@ -7,6 +7,10 @@ import multer from "multer";
 import Stripe from "stripe";
 
 dotenv.config();
+
+import { verifyToken } from "./middleware/verifyToken.js";
+import { verifyRole } from "./middleware/verifyRole.js";
+
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 const upload = multer({
@@ -14,15 +18,34 @@ const upload = multer({
   limits: { fileSize: 5 * 1024 * 1024 },
 });
 
-
 const app = express();
 const port = process.env.PORT || 5000;
 
-app.use(cors({
-  origin: [process.env.CLIENT_URL],
-  credentials: true,
-}));
+app.use(
+  cors({
+    origin: [process.env.CLIENT_URL],
+    credentials: true,
+  })
+);
 
+// MongoDB Connection
+const client = new MongoClient(process.env.MONGODB_URI);
+let db;
+
+try {
+  await client.connect();
+  db = client.db("rentora");
+  console.log("MongoDB Connected Successfully");
+} catch (error) {
+  console.error("MongoDB Connection Failed:", error);
+  process.exit(1);
+}
+
+// Attach Database to Request
+app.use((req, res, next) => {
+  req.db = db;
+  next();
+});
 
 // Stripe Webhook - MUST be before express.json()
 app.post(
@@ -68,7 +91,6 @@ app.post(
           stripeSessionId: session.id,
         });
 
-        // Already processed or booking not found
         if (!pendingBooking) {
           const existingBooking = await bookings.findOne({
             stripeSessionId: session.id,
@@ -107,9 +129,6 @@ app.post(
           createdAt: new Date(),
         };
 
-        delete booking.stripeSessionId;
-        booking.stripeSessionId = session.id;
-
         await bookings.insertOne(booking);
 
         await pendingBookings.updateOne(
@@ -127,6 +146,7 @@ app.post(
       return res.status(200).json({ received: true });
     } catch (error) {
       console.error("Stripe webhook processing error:", error);
+
       return res.status(500).json({
         message: "Webhook processing failed",
       });
@@ -134,216 +154,207 @@ app.post(
   }
 );
 
-
-
-
 app.use(express.json());
-
-
-
-// Create Stripe Checkout Session
-app.post("/api/bookings/checkout", async (req, res) => {
-  try {
-    const {
-      equipmentId,
-      startDate,
-      endDate,
-      requiredQuantity,
-      contactNumber,
-      deliveryAddress,
-      notes,
-      customerName,
-      customerEmail,
-    } = req.body;
-
-    if (
-      !equipmentId ||
-      !ObjectId.isValid(equipmentId) ||
-      !startDate ||
-      !endDate ||
-      !requiredQuantity ||
-      !customerName ||
-      !customerEmail
-    ) {
-      return res.status(400).json({
-        message: "Please provide all required booking information",
-      });
-    }
-
-    const quantity = Number(requiredQuantity);
-
-    if (!Number.isInteger(quantity) || quantity < 1) {
-      return res.status(400).json({
-        message: "Invalid quantity",
-      });
-    }
-
-    const start = new Date(`${startDate}T00:00:00.000Z`);
-    const end = new Date(`${endDate}T00:00:00.000Z`);
-
-    if (
-      Number.isNaN(start.getTime()) ||
-      Number.isNaN(end.getTime()) ||
-      end < start
-    ) {
-      return res.status(400).json({
-        message: "Invalid rental dates",
-      });
-    }
-
-    const equipment = await db.collection("equipment").findOne({
-      _id: new ObjectId(equipmentId),
-      status: "Approved",
-    });
-
-    if (!equipment) {
-      return res.status(404).json({
-        message: "Approved equipment not found",
-      });
-    }
-
-    if (quantity > Number(equipment.availableQuantity)) {
-      return res.status(400).json({
-        message: "Requested quantity is not available",
-      });
-    }
-
-    const rentalDays =
-      Math.floor((end.getTime() - start.getTime()) / 86400000) + 1;
-
-    let rentalUnits;
-
-    if (equipment.rentalType === "Weekly") {
-      rentalUnits = Math.ceil(rentalDays / 7);
-    } else if (equipment.rentalType === "Monthly") {
-      rentalUnits = Math.ceil(rentalDays / 30);
-    } else {
-      rentalUnits = rentalDays;
-    }
-
-    const rentalPrice = Number(equipment.rentalPrice);
-
-    if (!Number.isFinite(rentalPrice) || rentalPrice <= 0) {
-      return res.status(400).json({
-        message: "Invalid equipment rental price",
-      });
-    }
-
-    const bookingAmount = rentalPrice * rentalUnits * quantity;
-
-    const pendingBooking = {
-      equipmentId: equipment._id.toString(),
-      equipmentName: equipment.equipmentName,
-      equipmentImage: equipment.image || "",
-      ownerName: equipment.ownerName || "",
-      ownerEmail: equipment.ownerEmail || "",
-
-      customerName,
-      customerEmail,
-
-      rentalStartDate: startDate,
-      rentalEndDate: endDate,
-      requiredQuantity: quantity,
-
-      contactNumber: contactNumber || "",
-      deliveryAddress: deliveryAddress || "",
-      notes: notes || "",
-
-      rentalDuration: rentalDays,
-      rentalPrice,
-      rentalType: equipment.rentalType,
-      rentalUnits,
-      bookingAmount,
-
-      paymentStatus: "Unpaid",
-      bookingStatus: "Pending Payment",
-      createdAt: new Date(),
-    };
-
-    const pendingResult = await db
-      .collection("pendingBookings")
-      .insertOne(pendingBooking);
-
-    try {
-      const session = await stripe.checkout.sessions.create({
-        mode: "payment",
-
-        customer_email: customerEmail,
-
-        line_items: [
-          {
-            price_data: {
-              currency: process.env.STRIPE_CURRENCY || "bdt",
-              product_data: {
-                name: equipment.equipmentName,
-                images: equipment.image ? [equipment.image] : [],
-                description: `${rentalDays} rental days, quantity ${quantity}`,
-              },
-              unit_amount: Math.round(bookingAmount * 100),
-            },
-            quantity: 1,
-          },
-        ],
-
-        metadata: {
-          pendingBookingId: pendingResult.insertedId.toString(),
-        },
-
-        success_url: `${process.env.CLIENT_URL}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${process.env.CLIENT_URL}/payment/cancel`,
-      });
-
-      await db.collection("pendingBookings").updateOne(
-        { _id: pendingResult.insertedId },
-        {
-          $set: {
-            stripeSessionId: session.id,
-          },
-        }
-      );
-
-      return res.status(200).json({
-        success: true,
-        checkoutUrl: session.url,
-        sessionId: session.id,
-      });
-    } catch (stripeError) {
-      await db.collection("pendingBookings").deleteOne({
-        _id: pendingResult.insertedId,
-      });
-
-      throw stripeError;
-    }
-  } catch (error) {
-    console.error("Checkout API error:", error);
-
-    return res.status(500).json({
-      message: error.message || "Failed to create checkout session",
-    });
-  }
-});
-
-
-
-// MongoDB Connection
-const client = new MongoClient(process.env.MONGODB_URI);
-let db;
-
-try {
-  await client.connect();
-  db = client.db("rentora");
-  console.log("MongoDB Connected Successfully");
-} catch (error) {
-  console.error("MongoDB Connection Failed:", error);
-  process.exit(1);
-}
 
 // Home Route
 app.get("/", (req, res) => {
   res.send("Rentora server is running");
 });
 
-// GET Featured Equipment
+// JWT Authentication Test
+app.get("/api/auth-check", verifyToken, (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: "JWT verification successful",
+    user: req.user,
+  });
+});
+
+// Create Stripe Checkout Session
+app.post(
+  "/api/bookings/checkout",
+  verifyToken,
+  verifyRole("customer"),
+  async (req, res) => {
+    try {
+      const {
+        equipmentId,
+        startDate,
+        endDate,
+        requiredQuantity,
+        contactNumber,
+        deliveryAddress,
+        notes,
+      } = req.body;
+
+      const customerEmail = req.user.email;
+
+      const user = await db.collection("user").findOne({
+        email: customerEmail,
+      });
+
+      if (
+        !equipmentId ||
+        !ObjectId.isValid(equipmentId) ||
+        !startDate ||
+        !endDate ||
+        !requiredQuantity
+      ) {
+        return res.status(400).json({
+          message: "Please provide all required booking information",
+        });
+      }
+
+      if (!user) {
+        return res.status(404).json({ message: "Customer not found" });
+      }
+
+      const quantity = Number(requiredQuantity);
+
+      if (!Number.isInteger(quantity) || quantity < 1) {
+        return res.status(400).json({ message: "Invalid quantity" });
+      }
+
+      const start = new Date(`${startDate}T00:00:00.000Z`);
+      const end = new Date(`${endDate}T00:00:00.000Z`);
+
+      if (
+        Number.isNaN(start.getTime()) ||
+        Number.isNaN(end.getTime()) ||
+        end < start
+      ) {
+        return res.status(400).json({ message: "Invalid rental dates" });
+      }
+
+      const equipment = await db.collection("equipment").findOne({
+        _id: new ObjectId(equipmentId),
+        status: "Approved",
+      });
+
+      if (!equipment) {
+        return res.status(404).json({
+          message: "Approved equipment not found",
+        });
+      }
+
+      if (quantity > Number(equipment.availableQuantity)) {
+        return res.status(400).json({
+          message: "Requested quantity is not available",
+        });
+      }
+
+      const rentalDays =
+        Math.floor((end.getTime() - start.getTime()) / 86400000) + 1;
+
+      let rentalUnits;
+
+      if (equipment.rentalType === "Weekly") {
+        rentalUnits = Math.ceil(rentalDays / 7);
+      } else if (equipment.rentalType === "Monthly") {
+        rentalUnits = Math.ceil(rentalDays / 30);
+      } else {
+        rentalUnits = rentalDays;
+      }
+
+      const rentalPrice = Number(equipment.rentalPrice);
+
+      if (!Number.isFinite(rentalPrice) || rentalPrice <= 0) {
+        return res.status(400).json({
+          message: "Invalid equipment rental price",
+        });
+      }
+
+      const bookingAmount = rentalPrice * rentalUnits * quantity;
+
+      const pendingBooking = {
+        equipmentId: equipment._id.toString(),
+        equipmentName: equipment.equipmentName,
+        equipmentImage: equipment.image || "",
+        ownerName: equipment.ownerName || "",
+        ownerEmail: equipment.ownerEmail || "",
+
+        customerName: user.name || "",
+        customerEmail,
+
+        rentalStartDate: startDate,
+        rentalEndDate: endDate,
+        requiredQuantity: quantity,
+
+        contactNumber: contactNumber || "",
+        deliveryAddress: deliveryAddress || "",
+        notes: notes || "",
+
+        rentalDuration: rentalDays,
+        rentalPrice,
+        rentalType: equipment.rentalType,
+        rentalUnits,
+        bookingAmount,
+
+        paymentStatus: "Unpaid",
+        bookingStatus: "Pending Payment",
+        createdAt: new Date(),
+      };
+
+      const pendingResult = await db
+        .collection("pendingBookings")
+        .insertOne(pendingBooking);
+
+      try {
+        const session = await stripe.checkout.sessions.create({
+          mode: "payment",
+          customer_email: customerEmail,
+
+          line_items: [
+            {
+              price_data: {
+                currency: process.env.STRIPE_CURRENCY || "bdt",
+                product_data: {
+                  name: equipment.equipmentName,
+                  images: equipment.image ? [equipment.image] : [],
+                  description: `${rentalDays} rental days, quantity ${quantity}`,
+                },
+                unit_amount: Math.round(bookingAmount * 100),
+              },
+              quantity: 1,
+            },
+          ],
+
+          metadata: {
+            pendingBookingId: pendingResult.insertedId.toString(),
+          },
+
+          success_url: `${process.env.CLIENT_URL}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
+          cancel_url: `${process.env.CLIENT_URL}/payment/cancel`,
+        });
+
+        await db.collection("pendingBookings").updateOne(
+          { _id: pendingResult.insertedId },
+          { $set: { stripeSessionId: session.id } }
+        );
+
+        return res.status(200).json({
+          success: true,
+          checkoutUrl: session.url,
+          sessionId: session.id,
+        });
+      } catch (stripeError) {
+        await db.collection("pendingBookings").deleteOne({
+          _id: pendingResult.insertedId,
+        });
+
+        throw stripeError;
+      }
+    } catch (error) {
+      console.error("Checkout API error:", error);
+
+      return res.status(500).json({
+        message: error.message || "Failed to create checkout session",
+      });
+    }
+  }
+);
+
+// GET Featured Equipment - Public
 app.get("/api/equipment/featured", async (req, res) => {
   try {
     const equipment = await db.collection("equipment")
@@ -358,7 +369,7 @@ app.get("/api/equipment/featured", async (req, res) => {
   }
 });
 
-// GET All Approved Equipment (Search, Filter & Sort)
+// GET All Approved Equipment - Public
 app.get("/api/equipment", async (req, res) => {
   try {
     const {
@@ -373,7 +384,6 @@ app.get("/api/equipment", async (req, res) => {
 
     const query = { status: "Approved" };
 
-    // Search by equipment name and location
     if (search) {
       const text = String(search).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -383,7 +393,6 @@ app.get("/api/equipment", async (req, res) => {
       ];
     }
 
-    // Category and Rental Type
     if (category && category !== "All") {
       query.category = category;
     }
@@ -392,7 +401,6 @@ app.get("/api/equipment", async (req, res) => {
       query.rentalType = rentalType;
     }
 
-    // Price Range
     if (minPrice || maxPrice) {
       query.rentalPrice = {};
 
@@ -400,14 +408,12 @@ app.get("/api/equipment", async (req, res) => {
       if (maxPrice) query.rentalPrice.$lte = Number(maxPrice);
     }
 
-    // Availability
     if (availability === "Available") {
       query.availableQuantity = { $gt: 0 };
     } else if (availability === "Unavailable") {
       query.availableQuantity = { $lte: 0 };
     }
 
-    // Sorting
     const sortOption =
       sort === "price-low"
         ? { rentalPrice: 1 }
@@ -436,83 +442,154 @@ app.get("/api/equipment", async (req, res) => {
 });
 
 // Owner My Equipment Rentals
-app.get("/api/bookings/owner/:email", async (req, res) => {
-  const email = decodeURIComponent(req.params.email);
+app.get(
+  "/api/bookings/owner/:email",
+  verifyToken,
+  verifyRole("owner"),
+  async (req, res) => {
+    try {
+      const email = decodeURIComponent(req.params.email);
 
-  const bookings = await db.collection("bookings")
-    .find({ ownerEmail: email })
-    .sort({ createdAt: -1 })
-    .toArray();
+      if (email !== req.user.email) {
+        return res.status(403).json({ message: "Access denied" });
+      }
 
-  res.send({ success: true, bookings });
-});
+      const bookings = await db.collection("bookings")
+        .find({ ownerEmail: req.user.email })
+        .sort({ createdAt: -1 })
+        .toArray();
 
-// Customer Favorites
-app.post("/api/favorites", async (req, res) => {
-  const { customerName, customerEmail, equipmentId } = req.body;
+      res.send({ success: true, bookings });
+    } catch (error) {
+      res.status(500).send({ success: false, message: "Server Error" });
+    }
+  }
+);
 
-  const equipment = await db.collection("equipment").findOne({
-    _id: new ObjectId(equipmentId),
-  });
+// Customer Favorites - Add
+app.post(
+  "/api/favorites",
+  verifyToken,
+  verifyRole("customer"),
+  async (req, res) => {
+    try {
+      const { equipmentId } = req.body;
 
-  const favorite = {
-    customerName,
-    customerEmail,
-    equipmentId,
-    equipmentName: equipment.equipmentName,
-    category: equipment.category,
-    image: equipment.image,
-    ownerName: equipment.ownerName,
-    ownerEmail: equipment.ownerEmail,
-    createdAt: new Date(),
-  };
+      if (!equipmentId || !ObjectId.isValid(equipmentId)) {
+        return res.status(400).json({ message: "Invalid equipment ID" });
+      }
 
-  const result = await db.collection("favorites").insertOne(favorite);
+      const equipment = await db.collection("equipment").findOne({
+        _id: new ObjectId(equipmentId),
+        status: "Approved",
+      });
 
-  res.send({ success: true, insertedId: result.insertedId });
-});
+      if (!equipment) {
+        return res.status(404).json({ message: "Equipment not found" });
+      }
+
+      const user = await db.collection("user").findOne({
+        email: req.user.email,
+      });
+
+      const favorite = {
+        customerName: user?.name || "",
+        customerEmail: req.user.email,
+        equipmentId,
+        equipmentName: equipment.equipmentName,
+        category: equipment.category,
+        image: equipment.image,
+        ownerName: equipment.ownerName,
+        ownerEmail: equipment.ownerEmail,
+        createdAt: new Date(),
+      };
+
+      const result = await db.collection("favorites").insertOne(favorite);
+
+      res.send({ success: true, insertedId: result.insertedId });
+    } catch (error) {
+      res.status(500).send({ success: false, message: "Failed to add favorite" });
+    }
+  }
+);
 
 // Get Customer Favorites
-app.get("/api/favorites/:email", async (req, res) => {
-  const favorites = await db.collection("favorites")
-    .find({ customerEmail: req.params.email })
-    .sort({ createdAt: -1 })
-    .toArray();
+app.get(
+  "/api/favorites/:email",
+  verifyToken,
+  verifyRole("customer"),
+  async (req, res) => {
+    const email = decodeURIComponent(req.params.email);
 
-  res.send({ success: true, favorites });
-});
+    if (email !== req.user.email) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const favorites = await db.collection("favorites")
+      .find({ customerEmail: req.user.email })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.send({ success: true, favorites });
+  }
+);
 
 // Remove Favorite
-app.delete("/api/favorites/:id", async (req, res) => {
-  const result = await db.collection("favorites").deleteOne({
-    _id: new ObjectId(req.params.id),
-  });
+app.delete(
+  "/api/favorites/:id",
+  verifyToken,
+  verifyRole("customer"),
+  async (req, res) => {
+    if (!ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ message: "Invalid favorite ID" });
+    }
 
-  res.send({
-    success: result.deletedCount > 0,
-    message: result.deletedCount
-      ? "Favorite removed successfully"
-      : "Favorite not found",
-  });
-});
+    const result = await db.collection("favorites").deleteOne({
+      _id: new ObjectId(req.params.id),
+      customerEmail: req.user.email,
+    });
+
+    res.send({
+      success: result.deletedCount > 0,
+      message: result.deletedCount
+        ? "Favorite removed successfully"
+        : "Favorite not found",
+    });
+  }
+);
 
 // Customer My Rentals
-app.get("/api/bookings/customer/:email", async (req, res) => {
-  const email = decodeURIComponent(req.params.email);
+app.get(
+  "/api/bookings/customer/:email",
+  verifyToken,
+  verifyRole("customer"),
+  async (req, res) => {
+    const email = decodeURIComponent(req.params.email);
 
-  const bookings = await db.collection("bookings")
-    .find({ customerEmail: email })
-    .sort({ createdAt: -1 })
-    .toArray();
+    if (email !== req.user.email) {
+      return res.status(403).json({ message: "Access denied" });
+    }
 
-  res.send({ success: true, bookings });
-});
+    const bookings = await db.collection("bookings")
+      .find({ customerEmail: req.user.email })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.send({ success: true, bookings });
+  }
+);
 
 // GET User Profile
-app.get("/api/profile/:email", async (req, res) => {
+app.get("/api/profile/:email", verifyToken, async (req, res) => {
   try {
+    const email = decodeURIComponent(req.params.email);
+
+    if (email !== req.user.email) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
     const user = await db.collection("user").findOne(
-      { email: req.params.email },
+      { email: req.user.email },
       {
         projection: {
           name: 1,
@@ -536,12 +613,18 @@ app.get("/api/profile/:email", async (req, res) => {
 });
 
 // UPDATE User Profile
-app.post("/api/profile/:email", async (req, res) => {
+app.post("/api/profile/:email", verifyToken, async (req, res) => {
   try {
+    const email = decodeURIComponent(req.params.email);
+
+    if (email !== req.user.email) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
     const { name, image, phone, address } = req.body;
 
     const result = await db.collection("user").updateOne(
-      { email: req.params.email },
+      { email: req.user.email },
       { $set: { name, image, phone, address } }
     );
 
@@ -552,65 +635,94 @@ app.post("/api/profile/:email", async (req, res) => {
 });
 
 // IMAGE UPLOAD
-app.post("/api/upload-image", upload.single("image"), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).send({ message: "No image selected" });
+app.post(
+  "/api/upload-image",
+  verifyToken,
+  upload.single("image"),
+  async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).send({ message: "No image selected" });
+      }
+
+      const formData = new FormData();
+      formData.append("image", req.file.buffer.toString("base64"));
+
+      const response = await fetch(
+        `https://api.imgbb.com/1/upload?key=${process.env.IMGBB_API_KEY}`,
+        { method: "POST", body: formData }
+      );
+
+      const result = await response.json();
+
+      if (!response.ok || !result.success) {
+        return res.status(500).send({
+          message: result.error?.message || "Image upload failed",
+        });
+      }
+
+      res.send({ success: true, image: result.data.url });
+    } catch (error) {
+      console.error("Upload Error:", error);
+      res.status(500).send({ message: "Image upload failed" });
     }
-
-    const formData = new FormData();
-    formData.append("image", req.file.buffer.toString("base64"));
-
-    const response = await fetch(
-      `https://api.imgbb.com/1/upload?key=${process.env.IMGBB_API_KEY}`,
-      { method: "POST", body: formData }
-    );
-
-    const result = await response.json();
-
-    if (!response.ok || !result.success) {
-      return res.status(500).send({
-        message: result.error?.message || "Image upload failed",
-      });
-    }
-
-    res.send({ success: true, image: result.data.url });
-  } catch (error) {
-    console.error("Upload Error:", error);
-    res.status(500).send({ message: "Image upload failed" });
   }
-});
+);
 
 // POST Owner Add Equipment
-app.post("/api/equipment", async (req, res) => {
-  const equipmentData = req.body;
+app.post(
+  "/api/equipment",
+  verifyToken,
+  verifyRole("owner"),
+  async (req, res) => {
+    try {
+      const user = await db.collection("user").findOne({
+        email: req.user.email,
+      });
 
-  const result = await db.collection("equipment").insertOne({
-    ...equipmentData,
-    status: "Pending",
-    createdAt: new Date(),
-  });
+      const equipmentData = req.body;
 
-  res.send({
-    success: true,
-    message: "Equipment added successfully",
-    insertedId: result.insertedId,
-  });
-});
+      const result = await db.collection("equipment").insertOne({
+        ...equipmentData,
+        ownerName: user?.name || "",
+        ownerEmail: req.user.email,
+        status: "Pending",
+        createdAt: new Date(),
+      });
+
+      res.send({
+        success: true,
+        message: "Equipment added successfully",
+        insertedId: result.insertedId,
+      });
+    } catch (error) {
+      res.status(500).send({ success: false, message: "Failed to add equipment" });
+    }
+  }
+);
 
 // GET Owner My Equipment
-app.get("/api/equipment/my-equipment/:email", async (req, res) => {
-  const email = decodeURIComponent(req.params.email);
+app.get(
+  "/api/equipment/my-equipment/:email",
+  verifyToken,
+  verifyRole("owner"),
+  async (req, res) => {
+    const email = decodeURIComponent(req.params.email);
 
-  const equipment = await db.collection("equipment")
-    .find({ ownerEmail: email })
-    .sort({ createdAt: -1 })
-    .toArray();
+    if (email !== req.user.email) {
+      return res.status(403).json({ message: "Access denied" });
+    }
 
-  res.send({ success: true, equipment });
-});
+    const equipment = await db.collection("equipment")
+      .find({ ownerEmail: req.user.email })
+      .sort({ createdAt: -1 })
+      .toArray();
 
-// GET Equipment Details
+    res.send({ success: true, equipment });
+  }
+);
+
+// GET Equipment Details - Public
 app.get("/api/equipment/:id", async (req, res) => {
   const { id } = req.params;
 
@@ -622,138 +734,258 @@ app.get("/api/equipment/:id", async (req, res) => {
     _id: new ObjectId(id),
   });
 
+  if (!equipment) {
+    return res.status(404).send({ message: "Equipment not found" });
+  }
+
   res.send(equipment);
 });
 
 // Update Owner Equipment
-app.patch("/api/equipment/:id", async (req, res) => {
-  const { id } = req.params;
+app.patch(
+  "/api/equipment/:id",
+  verifyToken,
+  verifyRole("owner"),
+  async (req, res) => {
+    const { id } = req.params;
 
-  if (!ObjectId.isValid(id)) {
-    return res.status(400).send({ message: "Invalid equipment ID" });
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).send({ message: "Invalid equipment ID" });
+    }
+
+    const {
+      equipmentName,
+      description,
+      category,
+      rentalPrice,
+      rentalType,
+      availableQuantity,
+      location,
+      image,
+    } = req.body;
+
+    const updateData = {};
+
+    if (equipmentName !== undefined) updateData.equipmentName = equipmentName;
+    if (description !== undefined) updateData.description = description;
+    if (category !== undefined) updateData.category = category;
+    if (rentalPrice !== undefined) updateData.rentalPrice = rentalPrice;
+    if (rentalType !== undefined) updateData.rentalType = rentalType;
+    if (availableQuantity !== undefined) updateData.availableQuantity = availableQuantity;
+    if (location !== undefined) updateData.location = location;
+    if (image !== undefined) updateData.image = image;
+
+    const result = await db.collection("equipment").updateOne(
+      {
+        _id: new ObjectId(id),
+        ownerEmail: req.user.email,
+      },
+      { $set: updateData }
+    );
+
+    if (!result.matchedCount) {
+      return res.status(404).send({ message: "Equipment not found" });
+    }
+
+    res.send({ success: true, message: "Equipment updated" });
   }
-
-  await db.collection("equipment").updateOne(
-    { _id: new ObjectId(id) },
-    { $set: req.body }
-  );
-
-  res.send({ success: true, message: "Equipment updated" });
-});
+);
 
 // Delete Owner Equipment
-app.delete("/api/equipment/:id", async (req, res) => {
-  const result = await db.collection("equipment").deleteOne({
-    _id: new ObjectId(req.params.id),
-  });
+app.delete(
+  "/api/equipment/:id",
+  verifyToken,
+  verifyRole("owner"),
+  async (req, res) => {
+    if (!ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ message: "Invalid equipment ID" });
+    }
 
-  res.send({
-    success: result.deletedCount > 0,
-    message: result.deletedCount ? "Equipment deleted" : "Not found",
-  });
-});
-
-// GET All Users
-app.get("/api/admin/users", async (req, res) => {
-  try {
-    const users = await db.collection("user")
-      .find({})
-      .sort({ createdAt: -1 })
-      .toArray();
-
-    res.send({ success: true, users });
-  } catch (error) {
-    res.status(500).send({ success: false, message: "Server Error" });
-  }
-});
-
-// Delete User
-app.delete("/api/admin/users/:id", async (req, res) => {
-  const result = await db.collection("user").deleteOne({
-    _id: new ObjectId(req.params.id),
-  });
-
-  res.send({ success: true, result });
-});
-
-// Update User Role
-app.patch("/api/admin/users/:id/role", async (req, res) => {
-  const { id } = req.params;
-  const { role } = req.body;
-
-  if (!ObjectId.isValid(id) || !["customer", "owner", "admin"].includes(role)) {
-    return res.status(400).send({ message: "Invalid ID or role" });
-  }
-
-  const result = await db.collection("user").updateOne(
-    { _id: new ObjectId(id) },
-    { $set: { role } }
-  );
-
-  if (!result.matchedCount) {
-    return res.status(404).send({ message: "User not found" });
-  }
-
-  res.send({ success: true, message: "Role updated successfully" });
-});
-
-// GET Admin All Equipment
-app.get("/api/admin/equipment", async (req, res) => {
-  const equipment = await db.collection("equipment")
-    .find({})
-    .sort({ createdAt: -1 })
-    .toArray();
-
-  res.send({ success: true, equipment });
-});
-
-// Admin Update / Approve / Reject Equipment
-app.patch("/api/admin/equipment/:id", async (req, res) => {
-  const result = await db.collection("equipment").updateOne(
-    { _id: new ObjectId(req.params.id) },
-    { $set: req.body }
-  );
-
-  res.send({ success: result.modifiedCount > 0 });
-});
-
-// Admin Delete Equipment
-app.delete("/api/admin/equipment/:id", async (req, res) => {
-  const result = await db.collection("equipment").deleteOne({
-    _id: new ObjectId(req.params.id),
-  });
-
-  res.send({ success: result.deletedCount > 0 });
-});
-
-
-
-// GET Admin All Rentals
-app.get("/api/admin/bookings", async (req, res) => {
-  try {
-    const bookings = await db.collection("bookings")
-      .find({})
-      .sort({ createdAt: -1 })
-      .toArray();
+    const result = await db.collection("equipment").deleteOne({
+      _id: new ObjectId(req.params.id),
+      ownerEmail: req.user.email,
+    });
 
     res.send({
-      success: true,
-      total: bookings.length,
-      bookings,
-    });
-  } catch (error) {
-    console.error("Admin All Rentals Error:", error);
-
-    res.status(500).send({
-      success: false,
-      message: "Failed to fetch all rental bookings",
+      success: result.deletedCount > 0,
+      message: result.deletedCount ? "Equipment deleted" : "Not found",
     });
   }
-});
+);
 
+// GET All Users - Admin
+app.get(
+  "/api/admin/users",
+  verifyToken,
+  verifyRole("admin"),
+  async (req, res) => {
+    try {
+      const users = await db.collection("user")
+        .find({})
+        .sort({ createdAt: -1 })
+        .toArray();
 
+      res.send({ success: true, users });
+    } catch (error) {
+      res.status(500).send({ success: false, message: "Server Error" });
+    }
+  }
+);
 
+// Delete User - Admin
+app.delete(
+  "/api/admin/users/:id",
+  verifyToken,
+  verifyRole("admin"),
+  async (req, res) => {
+    if (!ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ message: "Invalid user ID" });
+    }
 
+    const result = await db.collection("user").deleteOne({
+      _id: new ObjectId(req.params.id),
+    });
+
+    res.send({ success: true, result });
+  }
+);
+
+// Update User Role - Admin
+app.patch(
+  "/api/admin/users/:id/role",
+  verifyToken,
+  verifyRole("admin"),
+  async (req, res) => {
+    const { id } = req.params;
+    const { role } = req.body;
+
+    if (!ObjectId.isValid(id) || !["customer", "owner", "admin"].includes(role)) {
+      return res.status(400).send({ message: "Invalid ID or role" });
+    }
+
+    const result = await db.collection("user").updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { role } }
+    );
+
+    if (!result.matchedCount) {
+      return res.status(404).send({ message: "User not found" });
+    }
+
+    res.send({ success: true, message: "Role updated successfully" });
+  }
+);
+
+// GET Admin All Equipment
+app.get(
+  "/api/admin/equipment",
+  verifyToken,
+  verifyRole("admin"),
+  async (req, res) => {
+    const equipment = await db.collection("equipment")
+      .find({})
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.send({ success: true, equipment });
+  }
+);
+
+// Admin Update / Approve / Reject Equipment
+app.patch(
+  "/api/admin/equipment/:id",
+  verifyToken,
+  verifyRole("admin"),
+  async (req, res) => {
+    if (!ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ message: "Invalid equipment ID" });
+    }
+
+    const {
+      equipmentName,
+      description,
+      category,
+      rentalPrice,
+      rentalType,
+      availableQuantity,
+      location,
+      image,
+      status,
+    } = req.body;
+
+    const updateData = {};
+
+    if (equipmentName !== undefined) updateData.equipmentName = equipmentName;
+    if (description !== undefined) updateData.description = description;
+    if (category !== undefined) updateData.category = category;
+    if (rentalPrice !== undefined) updateData.rentalPrice = rentalPrice;
+    if (rentalType !== undefined) updateData.rentalType = rentalType;
+    if (availableQuantity !== undefined) updateData.availableQuantity = availableQuantity;
+    if (location !== undefined) updateData.location = location;
+    if (image !== undefined) updateData.image = image;
+
+    if (status !== undefined) {
+      if (!["Pending", "Approved", "Rejected"].includes(status)) {
+        return res.status(400).json({ message: "Invalid equipment status" });
+      }
+
+      updateData.status = status;
+    }
+
+    const result = await db.collection("equipment").updateOne(
+      { _id: new ObjectId(req.params.id) },
+      { $set: updateData }
+    );
+
+    res.send({ success: result.matchedCount > 0 });
+  }
+);
+
+// Admin Delete Equipment
+app.delete(
+  "/api/admin/equipment/:id",
+  verifyToken,
+  verifyRole("admin"),
+  async (req, res) => {
+    if (!ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ message: "Invalid equipment ID" });
+    }
+
+    const result = await db.collection("equipment").deleteOne({
+      _id: new ObjectId(req.params.id),
+    });
+
+    res.send({ success: result.deletedCount > 0 });
+  }
+);
+
+// GET Admin All Rentals
+app.get(
+  "/api/admin/bookings",
+  verifyToken,
+  verifyRole("admin"),
+  async (req, res) => {
+    try {
+      const bookings = await db.collection("bookings")
+        .find({})
+        .sort({ createdAt: -1 })
+        .toArray();
+
+      res.send({
+        success: true,
+        total: bookings.length,
+        bookings,
+      });
+    } catch (error) {
+      console.error("Admin All Rentals Error:", error);
+
+      res.status(500).send({
+        success: false,
+        message: "Failed to fetch all rental bookings",
+      });
+    }
+  }
+);
 
 // Start Server
 app.listen(port, () => {
