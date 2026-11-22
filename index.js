@@ -4,13 +4,16 @@ import cors from "cors";
 import dotenv from "dotenv";
 import { MongoClient, ObjectId } from "mongodb";
 import multer from "multer";
+import Stripe from "stripe";
 
 dotenv.config();
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 },
 });
+
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -20,7 +23,307 @@ app.use(cors({
   credentials: true,
 }));
 
+
+// Stripe Webhook - MUST be before express.json()
+app.post(
+  "/api/stripe/webhook",
+  express.raw({ type: "application/json" }),
+  async (req, res) => {
+    const signature = req.headers["stripe-signature"];
+
+    let event;
+
+    try {
+      event = stripe.webhooks.constructEvent(
+        req.body,
+        signature,
+        process.env.STRIPE_WEBHOOK_SECRET
+      );
+    } catch (error) {
+      console.error("Webhook signature error:", error.message);
+      return res.status(400).send(`Webhook Error: ${error.message}`);
+    }
+
+    try {
+      if (event.type === "checkout.session.completed") {
+        const session = event.data.object;
+
+        if (session.payment_status !== "paid") {
+          return res.status(200).json({ received: true });
+        }
+
+        const pendingBookingId = session.metadata?.pendingBookingId;
+
+        if (!pendingBookingId || !ObjectId.isValid(pendingBookingId)) {
+          return res.status(400).json({
+            message: "Invalid pending booking ID",
+          });
+        }
+
+        const pendingBookings = db.collection("pendingBookings");
+        const bookings = db.collection("bookings");
+
+        const pendingBooking = await pendingBookings.findOne({
+          _id: new ObjectId(pendingBookingId),
+          stripeSessionId: session.id,
+        });
+
+        // Already processed or booking not found
+        if (!pendingBooking) {
+          const existingBooking = await bookings.findOne({
+            stripeSessionId: session.id,
+          });
+
+          if (existingBooking) {
+            return res.status(200).json({ received: true });
+          }
+
+          return res.status(404).json({
+            message: "Pending booking not found",
+          });
+        }
+
+        const expectedAmount = Math.round(
+          pendingBooking.bookingAmount * 100
+        );
+
+        if (
+          session.amount_total !== expectedAmount ||
+          session.currency !== (process.env.STRIPE_CURRENCY || "bdt")
+        ) {
+          return res.status(400).json({
+            message: "Payment amount or currency mismatch",
+          });
+        }
+
+        const booking = {
+          ...pendingBooking,
+          _id: new ObjectId(),
+          stripeSessionId: session.id,
+          stripePaymentIntentId: session.payment_intent,
+          paymentStatus: "Paid",
+          bookingStatus: "Confirmed",
+          paidAt: new Date(),
+          createdAt: new Date(),
+        };
+
+        delete booking.stripeSessionId;
+        booking.stripeSessionId = session.id;
+
+        await bookings.insertOne(booking);
+
+        await pendingBookings.updateOne(
+          { _id: pendingBooking._id },
+          {
+            $set: {
+              paymentStatus: "Paid",
+              bookingStatus: "Confirmed",
+              paidAt: new Date(),
+            },
+          }
+        );
+      }
+
+      return res.status(200).json({ received: true });
+    } catch (error) {
+      console.error("Stripe webhook processing error:", error);
+      return res.status(500).json({
+        message: "Webhook processing failed",
+      });
+    }
+  }
+);
+
+
+
+
 app.use(express.json());
+
+
+
+// Create Stripe Checkout Session
+app.post("/api/bookings/checkout", async (req, res) => {
+  try {
+    const {
+      equipmentId,
+      startDate,
+      endDate,
+      requiredQuantity,
+      contactNumber,
+      deliveryAddress,
+      notes,
+      customerName,
+      customerEmail,
+    } = req.body;
+
+    if (
+      !equipmentId ||
+      !ObjectId.isValid(equipmentId) ||
+      !startDate ||
+      !endDate ||
+      !requiredQuantity ||
+      !customerName ||
+      !customerEmail
+    ) {
+      return res.status(400).json({
+        message: "Please provide all required booking information",
+      });
+    }
+
+    const quantity = Number(requiredQuantity);
+
+    if (!Number.isInteger(quantity) || quantity < 1) {
+      return res.status(400).json({
+        message: "Invalid quantity",
+      });
+    }
+
+    const start = new Date(`${startDate}T00:00:00.000Z`);
+    const end = new Date(`${endDate}T00:00:00.000Z`);
+
+    if (
+      Number.isNaN(start.getTime()) ||
+      Number.isNaN(end.getTime()) ||
+      end < start
+    ) {
+      return res.status(400).json({
+        message: "Invalid rental dates",
+      });
+    }
+
+    const equipment = await db.collection("equipment").findOne({
+      _id: new ObjectId(equipmentId),
+      status: "Approved",
+    });
+
+    if (!equipment) {
+      return res.status(404).json({
+        message: "Approved equipment not found",
+      });
+    }
+
+    if (quantity > Number(equipment.availableQuantity)) {
+      return res.status(400).json({
+        message: "Requested quantity is not available",
+      });
+    }
+
+    const rentalDays =
+      Math.floor((end.getTime() - start.getTime()) / 86400000) + 1;
+
+    let rentalUnits;
+
+    if (equipment.rentalType === "Weekly") {
+      rentalUnits = Math.ceil(rentalDays / 7);
+    } else if (equipment.rentalType === "Monthly") {
+      rentalUnits = Math.ceil(rentalDays / 30);
+    } else {
+      rentalUnits = rentalDays;
+    }
+
+    const rentalPrice = Number(equipment.rentalPrice);
+
+    if (!Number.isFinite(rentalPrice) || rentalPrice <= 0) {
+      return res.status(400).json({
+        message: "Invalid equipment rental price",
+      });
+    }
+
+    const bookingAmount = rentalPrice * rentalUnits * quantity;
+
+    const pendingBooking = {
+      equipmentId: equipment._id.toString(),
+      equipmentName: equipment.equipmentName,
+      equipmentImage: equipment.image || "",
+      ownerName: equipment.ownerName || "",
+      ownerEmail: equipment.ownerEmail || "",
+
+      customerName,
+      customerEmail,
+
+      rentalStartDate: startDate,
+      rentalEndDate: endDate,
+      requiredQuantity: quantity,
+
+      contactNumber: contactNumber || "",
+      deliveryAddress: deliveryAddress || "",
+      notes: notes || "",
+
+      rentalDuration: rentalDays,
+      rentalPrice,
+      rentalType: equipment.rentalType,
+      rentalUnits,
+      bookingAmount,
+
+      paymentStatus: "Unpaid",
+      bookingStatus: "Pending Payment",
+      createdAt: new Date(),
+    };
+
+    const pendingResult = await db
+      .collection("pendingBookings")
+      .insertOne(pendingBooking);
+
+    try {
+      const session = await stripe.checkout.sessions.create({
+        mode: "payment",
+
+        customer_email: customerEmail,
+
+        line_items: [
+          {
+            price_data: {
+              currency: process.env.STRIPE_CURRENCY || "bdt",
+              product_data: {
+                name: equipment.equipmentName,
+                images: equipment.image ? [equipment.image] : [],
+                description: `${rentalDays} rental days, quantity ${quantity}`,
+              },
+              unit_amount: Math.round(bookingAmount * 100),
+            },
+            quantity: 1,
+          },
+        ],
+
+        metadata: {
+          pendingBookingId: pendingResult.insertedId.toString(),
+        },
+
+        success_url: `${process.env.CLIENT_URL}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${process.env.CLIENT_URL}/payment/cancel`,
+      });
+
+      await db.collection("pendingBookings").updateOne(
+        { _id: pendingResult.insertedId },
+        {
+          $set: {
+            stripeSessionId: session.id,
+          },
+        }
+      );
+
+      return res.status(200).json({
+        success: true,
+        checkoutUrl: session.url,
+        sessionId: session.id,
+      });
+    } catch (stripeError) {
+      await db.collection("pendingBookings").deleteOne({
+        _id: pendingResult.insertedId,
+      });
+
+      throw stripeError;
+    }
+  } catch (error) {
+    console.error("Checkout API error:", error);
+
+    return res.status(500).json({
+      message: error.message || "Failed to create checkout session",
+    });
+  }
+});
+
+
 
 // MongoDB Connection
 const client = new MongoClient(process.env.MONGODB_URI);
