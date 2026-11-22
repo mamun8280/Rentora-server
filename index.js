@@ -726,6 +726,35 @@ app.delete("/api/admin/equipment/:id", async (req, res) => {
   res.send({ success: result.deletedCount > 0 });
 });
 
+
+
+// GET Admin All Rentals
+app.get("/api/admin/bookings", async (req, res) => {
+  try {
+    const bookings = await db.collection("bookings")
+      .find({})
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.send({
+      success: true,
+      total: bookings.length,
+      bookings,
+    });
+  } catch (error) {
+    console.error("Admin All Rentals Error:", error);
+
+    res.status(500).send({
+      success: false,
+      message: "Failed to fetch all rental bookings",
+    });
+  }
+});
+
+
+
+
+
 // Start Server
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
